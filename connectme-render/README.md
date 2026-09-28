@@ -45,3 +45,14 @@ The `.onrender.com` address remains usable unless you disable it in Render after
 - The new tables (`profile_photo`, `verification_record`, `subscription_interest`) are created on startup by `db.create_all()`. Existing records remain intact. Use migrations for later schema changes.
 
 If `/request` returns HTTP 500 in Render, inspect the service logs at the time of the request and share the Python traceback with credentials redacted. The local signed-in GET and POST request flow passes; the screenshot alone does not identify the production exception.
+
+## Trust update: phone OTP and provider review
+
+NIN/identity collection has been removed from the user flow. Phone and profile review are separate checks and neither is a safety or background-check guarantee.
+
+- The phone form uses Termii's Send Token and Verify Token APIs. Set `TERMII_API_KEY` and an approved `TERMII_SENDER_ID` as secret Render environment variables to enable it. Without both, the send button remains disabled. Never place keys in the repository. Test with a real phone before calling this operational.
+- Phone values are normalized to Nigerian `234...` mobile format. Codes expire after five minutes; Termii limits attempts to three, while the app enforces a 90-second resend delay and three local attempts. Changing a phone resets its verified status.
+- Set a separate, random `ADMIN_REVIEW_KEY` of at least 32 characters in Render. Authorized staff can sign in and open `/admin/reviews/login`, then inspect and approve or reject pending provider listings. Do not share this key with providers. Existing listings have no approval record and display “Profile not reviewed” until submitted for review by editing the listing.
+- Care, transport, experiences and community requests require both a phone check and an approved provider profile to send offers. Other categories remain open during testing and display precise trust labels.
+- New tables are created on startup. No columns were added to existing tables; existing users and listings remain. For future changes, introduce migrations.
+- This release does not include complaint handling, completed-booking reviews or background checks. Add those before presenting ConnectMe as a safety-vetted marketplace.
