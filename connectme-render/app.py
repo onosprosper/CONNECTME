@@ -321,12 +321,20 @@ def normalize_phone(value):
     return None
 
 def otp_configured():
-    return bool(os.getenv('TERMII_API_KEY') and os.getenv('TERMII_SENDER_ID'))
+    return bool(os.getenv('TERMII_API_KEY') and os.getenv('TERMII_SENDER_ID') and termii_base_url())
+
+def termii_base_url():
+    value = os.getenv('TERMII_BASE_URL', '').rstrip('/')
+    parts = urlsplit(value)
+    host = (parts.hostname or '').lower()
+    return value if (parts.scheme == 'https' and (host == 'termii.com' or host.endswith('.termii.com')) and not parts.username and not parts.password and not parts.port and not parts.path and not parts.query and not parts.fragment) else None
 
 def termii_request(action, data):
-    # Fixed vendor host; API key and sender ID are server-side Render secrets.
+    # Only Termii HTTPS hosts are allowed; keys stay on the server.
+    base = termii_base_url()
+    if not base: raise ValueError('Termii base URL is not configured')
     payload = json.dumps({'api_key': os.environ['TERMII_API_KEY'], **data}).encode()
-    req = Request(f'https://api.ng.termii.com/api/sms/otp/{action}', data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+    req = Request(f'{base}/api/sms/otp/{action}', data=payload, headers={'Content-Type': 'application/json'}, method='POST')
     try:
         with urlopen(req, timeout=8) as response:
             return json.load(response)
