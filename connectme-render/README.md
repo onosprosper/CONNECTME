@@ -56,3 +56,7 @@ NIN/identity collection has been removed from the user flow. Phone and profile r
 - Care, transport, experiences and community requests require both a phone check and an approved provider profile to send offers. Other categories remain open during testing and display precise trust labels.
 - New tables are created on startup. No columns were added to existing tables; existing users and listings remain. For future changes, introduce migrations.
 - This release does not include complaint handling, completed-booking reviews or background checks. Add those before presenting ConnectMe as a safety-vetted marketplace.
+
+## Testing mode without OTP
+
+SMS verification is paused in the user interface. Do not configure Termii environment variables yet. Sensitive categories still require staff approval of the provider listing to send offers, but approval checks listing details only and does not establish identity or personal safety. Phone statuses remain unverified. The OTP integration code remains isolated for a future rollout.

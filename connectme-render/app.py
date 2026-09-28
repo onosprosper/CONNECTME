@@ -280,8 +280,8 @@ def submit_offer(job_id):
     job = db.get_or_404(JobRequest, job_id)
     provider = Provider.query.filter_by(user_id=session['user_id']).first()
     if not provider or job.customer_id == session['user_id'] or job.status != 'open': abort(403)
-    if job.category in ('Care services', 'Transport & help', 'Experiences', 'Connect & community') and (not provider.phone_verified or not provider.review or provider.review.status != 'approved'):
-        flash('This category requires a verified phone and reviewed provider profile before sending offers.', 'error')
+    if job.category in ('Care services', 'Transport & help', 'Experiences', 'Connect & community') and (not provider.review or provider.review.status != 'approved'):
+        flash('This category requires a reviewed provider profile before sending offers.', 'error')
         return redirect(url_for('job_detail', job_id=job_id))
     if Offer.query.filter_by(job_id=job.id, provider_id=provider.id).first(): abort(409)
     try:
