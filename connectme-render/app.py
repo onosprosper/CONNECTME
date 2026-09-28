@@ -113,6 +113,20 @@ class ProviderReview(db.Model):
     reviewer_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     provider = db.relationship('Provider', backref=db.backref('review', uselist=False))
 
+class SafetyReport(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    reporter_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    provider_id = db.Column(db.Integer, db.ForeignKey('provider.id'), nullable=False)
+    job_id = db.Column(db.Integer, db.ForeignKey('job_request.id'))
+    reason = db.Column(db.String(40), nullable=False)
+    details = db.Column(db.String(1200), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='open')
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    reviewed_at = db.Column(db.DateTime(timezone=True))
+    reviewer_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    provider = db.relationship('Provider')
+    reporter = db.relationship('User', foreign_keys=[reporter_id])
+
 class SubscriptionInterest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -169,7 +183,7 @@ def home():
     q = request.args.get('q', '').strip()[:100]
     city = request.args.get('city', '').strip()[:80]
     category = request.args.get('category', '').strip()[:80]
-    query = Provider.query
+    query = Provider.query.outerjoin(ProviderReview, ProviderReview.provider_id == Provider.id).filter(or_(ProviderReview.status.is_(None), ProviderReview.status != 'suspended'))
     if q:
         query = query.filter(or_(Provider.service.ilike(f'%{q}%'), Provider.bio.ilike(f'%{q}%'), Provider.area.ilike(f'%{q}%')))
     if city:
@@ -257,6 +271,7 @@ def provide():
 @app.get('/providers/<int:provider_id>')
 def provider_detail(provider_id):
     provider = db.get_or_404(Provider, provider_id)
+    if provider.review and provider.review.status == 'suspended' and session.get('user_id') != provider.user_id and not session.get('review_admin'): abort(404)
     return render_template('provider_detail.html', provider=provider)
 
 @app.get('/requests')
@@ -279,7 +294,7 @@ def job_detail(job_id):
 def submit_offer(job_id):
     job = db.get_or_404(JobRequest, job_id)
     provider = Provider.query.filter_by(user_id=session['user_id']).first()
-    if not provider or job.customer_id == session['user_id'] or job.status != 'open': abort(403)
+    if not provider or job.customer_id == session['user_id'] or job.status != 'open' or (provider.review and provider.review.status == 'suspended'): abort(403)
     if job.category in ('Care services', 'Transport & help', 'Experiences', 'Connect & community') and (not provider.review or provider.review.status != 'approved'):
         flash('This category requires a reviewed provider profile before sending offers.', 'error')
         return redirect(url_for('job_detail', job_id=job_id))
@@ -297,6 +312,7 @@ def accept_offer(offer_id):
     offer = db.get_or_404(Offer, offer_id)
     job = JobRequest.query.filter_by(id=offer.job_id, customer_id=session['user_id'], status='open').first_or_404()
     if offer.status != 'pending': abort(409)
+    if offer.provider.review and offer.provider.review.status == 'suspended': abort(403)
     job.status = 'booked'
     for other in job.offers: other.status = 'accepted' if other.id == offer.id else 'declined'
     db.session.commit()
@@ -366,7 +382,8 @@ def review_admin_login():
 @review_admin_required
 def review_queue():
     reviews = ProviderReview.query.filter_by(status='pending').order_by(ProviderReview.provider_id.desc()).all()
-    return render_template('review_queue.html', reviews=reviews)
+    suspended = ProviderReview.query.filter_by(status='suspended').order_by(ProviderReview.provider_id.desc()).all()
+    return render_template('review_queue.html', reviews=reviews, suspended=suspended)
 
 @app.post('/admin/reviews/<int:provider_id>')
 @login_required
@@ -374,11 +391,57 @@ def review_queue():
 def review_decision(provider_id):
     review = db.get_or_404(ProviderReview, provider_id)
     decision = request.form.get('decision')
-    if decision not in ('approved', 'rejected'): abort(400)
+    if decision not in ('approved', 'rejected') or (review.status == 'suspended' and decision != 'approved'): abort(400)
     review.status = decision; review.reviewed_at = now(); review.reviewer_id = session['user_id']
     db.session.commit()
     flash('Provider review recorded.', 'success')
     return redirect(url_for('review_queue'))
+
+REPORT_REASONS = ('Misleading listing', 'Harassment or abuse', 'Unsafe behaviour', 'Fraud or payment concern', 'Other')
+
+@app.route('/providers/<int:provider_id>/report', methods=['GET', 'POST'])
+@login_required
+def report_provider(provider_id):
+    provider = db.get_or_404(Provider, provider_id)
+    if provider.user_id == session['user_id']: abort(403)
+    if request.method == 'POST':
+        try:
+            reason = field('reason', 40)
+            if reason not in REPORT_REASONS: raise ValueError('Choose a reason.')
+            details = field('details', 1200)
+            if len(details) < 15: raise ValueError('Please describe the concern in at least 15 characters.')
+            existing = SafetyReport.query.filter_by(reporter_id=session['user_id'], provider_id=provider_id, status='open').first()
+            if existing: raise ValueError('You already have an open report about this provider.')
+            db.session.add(SafetyReport(reporter_id=session['user_id'], provider_id=provider_id, reason=reason, details=details))
+            db.session.commit()
+            flash('Your report was sent to the ConnectMe team.', 'success')
+            return redirect(url_for('provider_detail', provider_id=provider_id))
+        except ValueError as exc: flash(str(exc), 'error')
+    return render_template('report_form.html', provider=provider, reasons=REPORT_REASONS)
+
+@app.get('/admin/reports')
+@login_required
+@review_admin_required
+def report_queue():
+    reports = SafetyReport.query.filter_by(status='open').order_by(SafetyReport.created_at.asc()).all()
+    return render_template('report_queue.html', reports=reports)
+
+@app.post('/admin/reports/<int:report_id>')
+@login_required
+@review_admin_required
+def report_decision(report_id):
+    report = db.get_or_404(SafetyReport, report_id)
+    decision = request.form.get('decision')
+    if report.status != 'open' or decision not in ('dismissed', 'resolved', 'suspended'): abort(400)
+    if decision == 'suspended':
+        review = db.session.get(ProviderReview, report.provider_id)
+        if not review: review = ProviderReview(provider_id=report.provider_id)
+        review.status = 'suspended'; review.reviewed_at = now(); review.reviewer_id = session['user_id']
+        db.session.add(review)
+    report.status = decision; report.reviewed_at = now(); report.reviewer_id = session['user_id']
+    db.session.commit()
+    flash('Report decision recorded.', 'success')
+    return redirect(url_for('report_queue'))
 
 @app.route('/verification', methods=['GET', 'POST'])
 @login_required

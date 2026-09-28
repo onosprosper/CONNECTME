@@ -53,10 +53,14 @@ NIN/identity collection has been removed from the user flow. Phone and profile r
 - The phone form uses Termii's Send Token and Verify Token APIs. Set `TERMII_API_KEY`, your account-specific `TERMII_BASE_URL` (for example `https://v4.api.termii.com`), and an approved `TERMII_SENDER_ID` as secret Render environment variables to enable it. Without both, the send button remains disabled. Never place keys in the repository. Test with a real phone before calling this operational.
 - Phone values are normalized to Nigerian `234...` mobile format. Codes expire after five minutes; Termii limits attempts to three, while the app enforces a 90-second resend delay and three local attempts. Changing a phone resets its verified status.
 - Set a separate, random `ADMIN_REVIEW_KEY` of at least 32 characters in Render. Authorized staff can sign in and open `/admin/reviews/login`, then inspect and approve or reject pending provider listings. Do not share this key with providers. Existing listings have no approval record and display “Profile not reviewed” until submitted for review by editing the listing.
-- Care, transport, experiences and community requests require both a phone check and an approved provider profile to send offers. Other categories remain open during testing and display precise trust labels.
+- Care, transport, experiences and community requests require an approved provider profile to send offers during the no-OTP testing phase. Other categories remain open during testing and display precise trust labels.
 - New tables are created on startup. No columns were added to existing tables; existing users and listings remain. For future changes, introduce migrations.
-- This release does not include complaint handling, completed-booking reviews or background checks. Add those before presenting ConnectMe as a safety-vetted marketplace.
+- This release includes provider reports and a staff queue with suspension and restoration of listings. It does not include completed-booking reviews or background checks. Do not present ConnectMe as a safety-vetted marketplace.
 
 ## Testing mode without OTP
 
 SMS verification is paused in the user interface. Do not configure Termii environment variables yet. Sensitive categories still require staff approval of the provider listing to send offers, but approval checks listing details only and does not establish identity or personal safety. Phone statuses remain unverified. The OTP integration code remains isolated for a future rollout.
+
+## Safety reports
+
+Signed-in users can report a provider from its profile. Staff open `/admin/reports` after the existing review-key login to inspect open reports, resolve or dismiss them, or suspend the listing. Suspended listings disappear from search and cannot send new offers or have pending offers accepted. Staff can restore a suspended listing in `/admin/reviews` after review. Reports are stored privately in PostgreSQL; the form explicitly says it is not monitored in real time. There is no email alert yet, so staff must check the queue regularly.
