@@ -35,3 +35,13 @@ Local development uses SQLite. Production should use PostgreSQL. `db.create_all(
 5. In Web Service Settings → Custom Domains, add `connectme.com` and optionally `www.connectme.com`. Copy the DNS values Render presents to the domain registrar. Verify the domain inside Render after DNS updates. The domain must be registered and under your control.
 
 The `.onrender.com` address remains usable unless you disable it in Render after the custom domain works.
+
+## Update: verification, photos and plans
+
+- `/verification` lets signed-in users upload a public profile photo (JPEG/PNG/WebP, under 2 MB) and save a private phone number. Uploaded images are resized and re-encoded to JPEG to remove image metadata. Photos are stored in the database; no Render disk is required.
+- Phone and identity/NIN status remain **unverified**. The site does not collect NIN numbers or perform identity checks. Add an approved verification provider and OTP flow before showing verified badges.
+- `/subscriptions` displays proposed monthly customer and provider fees. Defaults: ₦1,000 customer and ₦3,000 provider. Set `CUSTOMER_MONTHLY_NGN` and `PROVIDER_MONTHLY_NGN` in Render to change those figures. The Register interest button records a pending choice. No payment is taken and no subscription access is granted yet.
+- The visual theme now uses blue and pink.
+- The new tables (`profile_photo`, `verification_record`, `subscription_interest`) are created on startup by `db.create_all()`. Existing records remain intact. Use migrations for later schema changes.
+
+If `/request` returns HTTP 500 in Render, inspect the service logs at the time of the request and share the Python traceback with credentials redacted. The local signed-in GET and POST request flow passes; the screenshot alone does not identify the production exception.

@@ -1,12 +1,15 @@
 import os
+import re
 import secrets
+from io import BytesIO
 from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlsplit
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint, or_
 from werkzeug.security import check_password_hash, generate_password_hash
+from PIL import Image, UnidentifiedImageError
 
 CATEGORIES = ('Food & cooking', 'Wellness', 'Home services', 'Skilled workers', 'Beauty', 'Care services', 'Tutors & skills', 'Transport & help', 'Experiences', 'Connect & community')
 app = Flask(__name__)
@@ -24,7 +27,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = bool(os.getenv('RENDER'))
-app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 3 * 1024 * 1024
 db = SQLAlchemy(app)
 
 
@@ -37,6 +40,7 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    photo = db.relationship('ProfilePhoto', uselist=False)
 
 class Provider(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -78,6 +82,27 @@ class Offer(db.Model):
     job = db.relationship('JobRequest', back_populates='offers')
     provider = db.relationship('Provider')
     __table_args__ = (UniqueConstraint('job_id', 'provider_id', name='uq_job_provider'),)
+
+class ProfilePhoto(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    image = db.Column(db.LargeBinary, nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
+class VerificationRecord(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    phone = db.Column(db.String(25), nullable=False, default='')
+    phone_verified = db.Column(db.Boolean, nullable=False, default=False)
+    identity_verified = db.Column(db.Boolean, nullable=False, default=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
+class SubscriptionInterest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(12), nullable=False)
+    monthly_ngn = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(24), nullable=False, default='pending_payment')
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    __table_args__ = (UniqueConstraint('user_id', 'role', name='uq_subscription_interest'),)
 
 @app.context_processor
 def shared():
@@ -259,6 +284,83 @@ def dashboard():
     provider = Provider.query.filter_by(user_id=session['user_id']).first()
     sent = Offer.query.filter_by(provider_id=provider.id).order_by(Offer.created_at.desc()).all() if provider else []
     return render_template('dashboard.html', jobs=jobs, provider=provider, sent=sent)
+
+@app.route('/verification', methods=['GET', 'POST'])
+@login_required
+def verification():
+    record = db.session.get(VerificationRecord, session['user_id'])
+    if request.method == 'POST':
+        action = request.form.get('action')
+        if action == 'photo':
+            upload = request.files.get('photo')
+            if not upload or not upload.filename:
+                flash('Choose a photo first.', 'error')
+            else:
+                try:
+                    source = upload.read(2 * 1024 * 1024 + 1)
+                    if len(source) > 2 * 1024 * 1024:
+                        raise ValueError('Choose an image smaller than 2 MB.')
+                    im = Image.open(BytesIO(source))
+                    im.verify()
+                    im = Image.open(BytesIO(source))
+                    if im.format not in ('JPEG', 'PNG', 'WEBP') or im.width * im.height > 20_000_000:
+                        raise ValueError('Use a JPG, PNG or WebP photo under 20 megapixels.')
+                    im = im.convert('RGB')
+                    im.thumbnail((700, 700))
+                    output = BytesIO()
+                    im.save(output, format='JPEG', quality=82, optimize=True)
+                    photo = db.session.get(ProfilePhoto, session['user_id'])
+                    if not photo: photo = ProfilePhoto(user_id=session['user_id'])
+                    photo.image = output.getvalue()
+                    photo.updated_at = now()
+                    db.session.add(photo); db.session.commit()
+                    flash('Your profile photo is saved. A photo alone does not verify identity.', 'success')
+                except (UnidentifiedImageError, OSError, ValueError) as exc:
+                    flash(str(exc) if isinstance(exc, ValueError) else 'This image could not be opened.', 'error')
+        elif action == 'phone':
+            phone = request.form.get('phone', '').strip()
+            if not re.fullmatch(r'\+?[0-9]{10,15}', phone):
+                flash('Enter a phone number with 10 to 15 digits.', 'error')
+            else:
+                if not record: record = VerificationRecord(user_id=session['user_id'])
+                record.phone = phone
+                record.phone_verified = False
+                record.updated_at = now()
+                db.session.add(record); db.session.commit()
+                flash('Phone number saved. OTP verification is not active yet.', 'success')
+        else:
+            abort(400)
+        return redirect(url_for('verification'))
+    photo = db.session.get(ProfilePhoto, session['user_id'])
+    return render_template('verification.html', record=record, has_photo=bool(photo))
+
+@app.get('/photo/<int:user_id>')
+def profile_photo(user_id):
+    photo = db.session.get(ProfilePhoto, user_id)
+    if not photo: abort(404)
+    response = send_file(BytesIO(photo.image), mimetype='image/jpeg', max_age=3600)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+@app.route('/subscriptions', methods=['GET', 'POST'])
+def subscriptions():
+    prices = {'customer': max(0, int(os.getenv('CUSTOMER_MONTHLY_NGN', '1000'))),
+              'provider': max(0, int(os.getenv('PROVIDER_MONTHLY_NGN', '3000')))}
+    if request.method == 'POST':
+        if 'user_id' not in session:
+            flash('Sign in to register your interest.', 'info')
+            return redirect(url_for('login', next=url_for('subscriptions')))
+        role = request.form.get('role')
+        if role not in prices: abort(400)
+        interest = SubscriptionInterest.query.filter_by(user_id=session['user_id'], role=role).first()
+        if not interest: interest = SubscriptionInterest(user_id=session['user_id'], role=role)
+        interest.monthly_ngn = prices[role]
+        interest.status = 'pending_payment'
+        db.session.add(interest); db.session.commit()
+        flash('Interest saved. No payment was taken and access is not active.', 'success')
+        return redirect(url_for('subscriptions'))
+    mine = SubscriptionInterest.query.filter_by(user_id=session['user_id']).all() if session.get('user_id') else []
+    return render_template('subscriptions.html', prices=prices, interests={row.role: row for row in mine})
 
 @app.get('/health')
 def health():
