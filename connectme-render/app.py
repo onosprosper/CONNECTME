@@ -178,6 +178,17 @@ class PhoneChallenge(db.Model):
     last_sent_at = db.Column(db.DateTime(timezone=True), nullable=False)
     attempts = db.Column(db.Integer, nullable=False, default=0)
 
+class PhoneCallChallenge(db.Model):
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    phone = db.Column(db.String(25), nullable=False)
+    code_hash = db.Column(db.String(255), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending')
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    reviewed_at = db.Column(db.DateTime(timezone=True))
+    user = db.relationship('User')
+
 class ProviderReview(db.Model):
     provider_id = db.Column(db.Integer, db.ForeignKey('provider.id'), primary_key=True)
     status = db.Column(db.String(20), nullable=False, default='pending')
@@ -671,6 +682,52 @@ def report_decision(report_id):
     flash('Report decision recorded.', 'success')
     return redirect(url_for('report_queue'))
 
+@app.get('/admin/phone-calls')
+@review_admin_required
+def phone_call_queue():
+    challenges = PhoneCallChallenge.query.filter_by(status='pending').order_by(PhoneCallChallenge.created_at.asc()).all()
+    return render_template('phone_call_queue.html', challenges=challenges)
+
+@app.post('/admin/phone-calls/<int:user_id>')
+@review_admin_required
+def phone_call_decision(user_id):
+    challenge = db.get_or_404(PhoneCallChallenge, user_id)
+    if challenge.status != 'pending': abort(409)
+    if utc(challenge.expires_at) < now():
+        challenge.status = 'expired'; db.session.commit()
+        flash('This code expired. Ask the user to request a new call.', 'error')
+        return redirect(url_for('phone_call_queue'))
+    admin = db.session.get(AdminAccount, session['admin_id'])
+    if admin.email.casefold() == challenge.user.email.casefold(): abort(403)
+    decision = request.form.get('decision')
+    if decision == 'reject':
+        challenge.status = 'rejected'
+    elif decision == 'confirm':
+        code = request.form.get('code', '').strip()
+        challenge.attempts += 1
+        if not re.fullmatch(r'[0-9]{6}', code) or not check_password_hash(challenge.code_hash, code):
+            if challenge.attempts >= 5: challenge.status = 'rejected'
+            db.session.commit()
+            flash('The code did not match. Do not approve this number.', 'error')
+            return redirect(url_for('phone_call_queue'))
+        if VerificationRecord.query.filter(VerificationRecord.phone == challenge.phone,
+            VerificationRecord.phone_verified.is_(True), VerificationRecord.user_id != user_id).first():
+            flash('That number is verified on another account.', 'error')
+            return redirect(url_for('phone_call_queue'))
+        record = db.session.get(VerificationRecord, user_id)
+        if not record: record = VerificationRecord(user_id=user_id)
+        record.phone = challenge.phone; record.phone_verified = True; record.updated_at = now()
+        provider = Provider.query.filter_by(user_id=user_id).first()
+        if provider: provider.phone_verified = True
+        db.session.add(record)
+        challenge.status = 'confirmed'
+    else: abort(400)
+    challenge.reviewed_at = now()
+    db.session.add(AdminAudit(admin_id=admin.id, action='phone_call_' + challenge.status, target_id=user_id))
+    db.session.commit()
+    flash('Phone call decision saved.', 'success')
+    return redirect(url_for('phone_call_queue'))
+
 @app.route('/verification', methods=['GET', 'POST'])
 @login_required
 def verification():
@@ -703,6 +760,32 @@ def verification():
                     flash('Your profile photo is saved. A photo alone does not verify identity.', 'success')
                 except (UnidentifiedImageError, OSError, ValueError) as exc:
                     flash(str(exc) if isinstance(exc, ValueError) else 'This image could not be opened.', 'error')
+        elif action == 'request_phone_call':
+            phone = normalize_phone(request.form.get('phone', ''))
+            if not phone:
+                flash('Enter a valid Nigerian mobile number.', 'error')
+            elif VerificationRecord.query.filter(VerificationRecord.phone == phone,
+                 VerificationRecord.phone_verified.is_(True), VerificationRecord.user_id != session['user_id']).first():
+                flash('This phone number is already verified on another account.', 'error')
+            else:
+                challenge = db.session.get(PhoneCallChallenge, session['user_id'])
+                if challenge and (now() - utc(challenge.created_at)).total_seconds() < 600:
+                    flash('Please wait ten minutes before requesting another call.', 'error')
+                else:
+                    code = f'{secrets.randbelow(1_000_000):06d}'
+                    if not challenge: challenge = PhoneCallChallenge(user_id=session['user_id'])
+                    challenge.phone, challenge.code_hash = phone, generate_password_hash(code)
+                    challenge.status, challenge.attempts = 'pending', 0
+                    challenge.created_at, challenge.expires_at = now(), now() + timedelta(hours=24)
+                    challenge.reviewed_at = None
+                    record = db.session.get(VerificationRecord, session['user_id'])
+                    if not record: record = VerificationRecord(user_id=session['user_id'])
+                    record.phone, record.phone_verified, record.updated_at = phone, False, now()
+                    provider = Provider.query.filter_by(user_id=session['user_id']).first()
+                    if provider: provider.phone_verified = False
+                    db.session.add_all([challenge, record]); db.session.commit()
+                    session['phone_call_code'] = code
+                    flash('Call requested. Keep the code below ready when ConnectMe staff call you.', 'info')
         elif action == 'phone':
             phone = normalize_phone(request.form.get('phone', ''))
             if not phone:
@@ -758,7 +841,10 @@ def verification():
             abort(400)
         return redirect(url_for('verification'))
     photo = db.session.get(ProfilePhoto, session['user_id'])
-    return render_template('verification.html', record=record, has_photo=bool(photo), challenge=db.session.get(PhoneChallenge, session['user_id']), otp_ready=otp_configured())
+    call_challenge = db.session.get(PhoneCallChallenge, session['user_id'])
+    if not call_challenge or call_challenge.status != 'pending' or utc(call_challenge.expires_at) < now():
+        session.pop('phone_call_code', None)
+    return render_template('verification.html', record=record, has_photo=bool(photo), challenge=db.session.get(PhoneChallenge, session['user_id']), otp_ready=otp_configured(), call_challenge=call_challenge, call_code=session.get('phone_call_code'))
 
 @app.get('/photo/<int:user_id>')
 def profile_photo(user_id):
