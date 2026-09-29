@@ -64,3 +64,15 @@ SMS verification is paused in the user interface. Do not configure Termii enviro
 ## Safety reports
 
 Signed-in users can report a provider from its profile. Staff open `/admin/reports` after the existing review-key login to inspect open reports, resolve or dismiss them, or suspend the listing. Suspended listings disappear from search and cannot send new offers or have pending offers accepted. Staff can restore a suspended listing in `/admin/reviews` after review. Reports are stored privately in PostgreSQL; the form explicitly says it is not monitored in real time. There is no email alert yet, so staff must check the queue regularly.
+
+## Paystack plan payments
+
+Set `PAYSTACK_SECRET_KEY` as a secret Render environment variable. Start with your Paystack **test** secret key (`sk_test_...`) and use a test transaction before switching to the live secret key (`sk_live_...`). Never paste the secret key into a chat, commit it, or add it to a browser script. Your Paystack business payout account is configured in your Paystack dashboard; the app does not need your bank account number.
+
+Set `PUBLIC_BASE_URL=https://connectme-mon2.onrender.com` (or your verified custom domain). In Paystack dashboard, set the webhook URL to `https://connectme-mon2.onrender.com/payments/paystack/webhook` (use the same domain as `PUBLIC_BASE_URL`). The checkout callback is supplied by the app. Paid plans run for 30 days and require manual renewal. A webhook or callback confirms each charge by querying Paystack, checking reference, amount, NGN currency and customer email. Duplicate notifications do not extend access.
+
+After testing both customer and provider checkout, set `REQUIRE_SUBSCRIPTION=1` on Render to require an active customer plan for posting requests and an active provider plan for sending offers. Leave this unset while testing the rest of the marketplace. Plan purchases remain available in either setting. There is no automatic recurring charge, refund workflow or in-app service-booking payment in this release. New `plan_payment` table is created by `db.create_all()`; use managed migrations before later schema edits.
+
+## Direct bank transfers (no payment provider)
+
+In Render, set `BANK_NAME`, `BANK_ACCOUNT_NAME`, and `BANK_ACCOUNT_NUMBER` (a 10-digit Nigerian bank account). Use an account owned by the operating business. The bank name, account name, and number are displayed to signed-in customers after they start a transfer. Leave these unset until the details have been checked. Customers receive a unique ConnectMe reference, submit their payer name and bank transaction reference, and wait for staff review. Staff sign in through `/admin/reviews/login` with `ADMIN_REVIEW_KEY` and open `/admin/payments`. A staff user cannot approve their own transfer. Staff must compare the actual bank credit, amount, date, and payer/reference against the submitted request before approval; the submitted fields alone are not payment evidence. Approval grants 30 days, and duplicate approvals are blocked. If manual transfer is the only payment option, leave `PAYSTACK_SECRET_KEY` unset. MYBUSINESS and its Paystack webhook are unaffected.

@@ -2,12 +2,14 @@ import os
 import re
 import secrets
 import json
+import hmac
+import hashlib
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint, or_
@@ -136,6 +138,82 @@ class SubscriptionInterest(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     __table_args__ = (UniqueConstraint('user_id', 'role', name='uq_subscription_interest'),)
 
+class PlanPayment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    reference = db.Column(db.String(90), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(12), nullable=False)
+    amount_ngn = db.Column(db.Integer, nullable=False)
+    email = db.Column(db.String(255), nullable=False)
+    status = db.Column(db.String(16), nullable=False, default='pending')
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    paid_at = db.Column(db.DateTime(timezone=True))
+    expires_at = db.Column(db.DateTime(timezone=True))
+
+class BankTransferPayment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    reference = db.Column(db.String(90), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(12), nullable=False)
+    amount_ngn = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(24), nullable=False, default='awaiting_transfer')
+    payer_name = db.Column(db.String(120), nullable=False, default='')
+    bank_reference = db.Column(db.String(120), nullable=False, default='')
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+    submitted_at = db.Column(db.DateTime(timezone=True))
+    reviewed_at = db.Column(db.DateTime(timezone=True))
+    reviewer_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    expires_at = db.Column(db.DateTime(timezone=True))
+    user = db.relationship('User', foreign_keys=[user_id])
+
+PLAN_PRICES = {'customer': 'CUSTOMER_MONTHLY_NGN', 'provider': 'PROVIDER_MONTHLY_NGN'}
+
+def plan_prices():
+    return {role: max(100, int(os.getenv(env, default))) for role, env, default in
+            [('customer', PLAN_PRICES['customer'], '1000'), ('provider', PLAN_PRICES['provider'], '3000')]}
+
+def paystack_api(path, method='GET', payload=None):
+    key = os.getenv('PAYSTACK_SECRET_KEY', '')
+    if not key.startswith(('sk_test_', 'sk_live_')): raise ValueError('Paystack is not configured.')
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = Request('https://api.paystack.co/' + path, data=data, method=method,
+                  headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+    with urlopen(req, timeout=10) as response:
+        result = json.load(response)
+    if not result.get('status'): raise ValueError('Payment service rejected the request.')
+    return result['data']
+
+def latest_paid_plan(user_id, role, active_only=False):
+    entries = []
+    for model, paid_status in ((PlanPayment, 'paid'), (BankTransferPayment, 'approved')):
+        query = model.query.filter(model.user_id == user_id, model.role == role, model.status == paid_status)
+        if active_only: query = query.filter(model.expires_at > now())
+        entry = query.order_by(model.expires_at.desc()).first()
+        if entry: entries.append(entry)
+    return max(entries, key=lambda entry: utc(entry.expires_at)) if entries else None
+
+def active_plan(user_id, role):
+    return latest_paid_plan(user_id, role, active_only=True)
+
+def require_plan(role):
+    if os.getenv('REQUIRE_SUBSCRIPTION') == '1' and not active_plan(session['user_id'], role):
+        flash('Choose a ' + role + ' plan to continue.', 'info')
+        return redirect(url_for('subscriptions'))
+
+def confirm_payment(payment):
+    if payment.status == 'paid': return True
+    data = paystack_api('transaction/verify/' + quote(payment.reference, safe=''))
+    customer = data.get('customer') or {}
+    if (data.get('status') != 'success' or data.get('reference') != payment.reference or
+        data.get('currency') != 'NGN' or data.get('amount') != payment.amount_ngn * 100 or
+        (customer.get('email') or '').casefold() != payment.email.casefold()):
+        return False
+    latest = latest_paid_plan(payment.user_id, payment.role)
+    base = max(now(), utc(latest.expires_at) if latest else now())
+    payment.status, payment.paid_at, payment.expires_at = 'paid', now(), base + timedelta(days=30)
+    db.session.commit()
+    return True
+
 @app.context_processor
 def shared():
     return {'categories': CATEGORIES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'csrf_token': csrf_token}
@@ -147,6 +225,7 @@ def csrf_token():
 
 @app.before_request
 def protect_post():
+    if request.path == '/payments/paystack/webhook': return
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and not secrets.compare_digest(request.form.get('csrf_token', ''), session.get('csrf', '')):
         abort(400, 'Invalid form token. Refresh the page and try again.')
 
@@ -233,6 +312,8 @@ def logout():
 @login_required
 def create_request():
     if request.method == 'POST':
+        blocked = require_plan('customer')
+        if blocked: return blocked
         try:
             category = field('category', 80)
             if category not in CATEGORIES: raise ValueError('Choose a category.')
@@ -292,6 +373,8 @@ def job_detail(job_id):
 @app.post('/requests/<int:job_id>/offer')
 @login_required
 def submit_offer(job_id):
+    blocked = require_plan('provider')
+    if blocked: return blocked
     job = db.get_or_404(JobRequest, job_id)
     provider = Provider.query.filter_by(user_id=session['user_id']).first()
     if not provider or job.customer_id == session['user_id'] or job.status != 'open' or (provider.review and provider.review.status == 'suspended'): abort(403)
@@ -538,25 +621,134 @@ def profile_photo(user_id):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
-@app.route('/subscriptions', methods=['GET', 'POST'])
+@app.get('/subscriptions')
 def subscriptions():
-    prices = {'customer': max(0, int(os.getenv('CUSTOMER_MONTHLY_NGN', '1000'))),
-              'provider': max(0, int(os.getenv('PROVIDER_MONTHLY_NGN', '3000')))}
-    if request.method == 'POST':
-        if 'user_id' not in session:
-            flash('Sign in to register your interest.', 'info')
-            return redirect(url_for('login', next=url_for('subscriptions')))
-        role = request.form.get('role')
-        if role not in prices: abort(400)
-        interest = SubscriptionInterest.query.filter_by(user_id=session['user_id'], role=role).first()
-        if not interest: interest = SubscriptionInterest(user_id=session['user_id'], role=role)
-        interest.monthly_ngn = prices[role]
-        interest.status = 'pending_payment'
-        db.session.add(interest); db.session.commit()
-        flash('Interest saved. No payment was taken and access is not active.', 'success')
+    plans = {role: active_plan(session['user_id'], role) for role in PLAN_PRICES} if session.get('user_id') else {}
+    bank_transfers = BankTransferPayment.query.filter_by(user_id=session['user_id']).order_by(BankTransferPayment.created_at.desc()).limit(20).all() if session.get('user_id') else []
+    bank_details = {k: os.getenv(k, '').strip() for k in ('BANK_NAME', 'BANK_ACCOUNT_NAME', 'BANK_ACCOUNT_NUMBER')}
+    bank_ready = all(bank_details.values()) and bool(re.fullmatch(r'[0-9]{10}', bank_details['BANK_ACCOUNT_NUMBER']))
+    return render_template('subscriptions.html', prices=plan_prices(), plans=plans,
+        payment_ready=bool(os.getenv('PAYSTACK_SECRET_KEY', '').startswith(('sk_test_', 'sk_live_'))),
+        test_mode=os.getenv('PAYSTACK_SECRET_KEY', '').startswith('sk_test_'),
+        bank_ready=bank_ready, bank_details=bank_details, bank_transfers=bank_transfers)
+
+@app.post('/subscriptions/bank/<role>')
+@login_required
+def start_bank_transfer(role):
+    if role not in PLAN_PRICES: abort(404)
+    bank_number = os.getenv('BANK_ACCOUNT_NUMBER', '').strip()
+    if not (os.getenv('BANK_NAME', '').strip() and os.getenv('BANK_ACCOUNT_NAME', '').strip()
+            and re.fullmatch(r'[0-9]{10}', bank_number)):
+        flash('Bank transfer is being set up.', 'error'); return redirect(url_for('subscriptions'))
+    existing = BankTransferPayment.query.filter(BankTransferPayment.user_id == session['user_id'],
+        BankTransferPayment.role == role, BankTransferPayment.status.in_(('awaiting_transfer', 'submitted'))).first()
+    if not existing:
+        existing = BankTransferPayment(reference='cm_bank_' + secrets.token_hex(16),
+            user_id=session['user_id'], role=role, amount_ngn=plan_prices()[role])
+        db.session.add(existing); db.session.commit()
+    return redirect(url_for('subscriptions'))
+
+@app.post('/subscriptions/bank/notify/<int:payment_id>')
+@login_required
+def submit_bank_transfer(payment_id):
+    payment = db.get_or_404(BankTransferPayment, payment_id)
+    if payment.user_id != session['user_id']: abort(403)
+    if payment.status != 'awaiting_transfer': abort(409)
+    payer = request.form.get('payer_name', '').strip()
+    bank_ref = request.form.get('bank_reference', '').strip()
+    if not (2 <= len(payer) <= 120 and 4 <= len(bank_ref) <= 120):
+        flash('Enter the payer name and bank transaction reference.', 'error')
         return redirect(url_for('subscriptions'))
-    mine = SubscriptionInterest.query.filter_by(user_id=session['user_id']).all() if session.get('user_id') else []
-    return render_template('subscriptions.html', prices=prices, interests={row.role: row for row in mine})
+    payment.payer_name, payment.bank_reference = payer, bank_ref
+    payment.status, payment.submitted_at = 'submitted', now()
+    db.session.commit()
+    flash('Transfer details submitted. Access starts after staff confirm the credit in our bank account.', 'info')
+    return redirect(url_for('subscriptions'))
+
+@app.get('/admin/payments')
+@login_required
+@review_admin_required
+def bank_payment_queue():
+    payments = BankTransferPayment.query.filter_by(status='submitted').order_by(BankTransferPayment.submitted_at.asc()).all()
+    return render_template('bank_payment_queue.html', payments=payments)
+
+@app.post('/admin/payments/<int:payment_id>')
+@login_required
+@review_admin_required
+def bank_payment_decision(payment_id):
+    payment = db.get_or_404(BankTransferPayment, payment_id)
+    decision = request.form.get('decision')
+    if payment.status != 'submitted' or decision not in ('approved', 'rejected'): abort(409)
+    if payment.user_id == session['user_id']: abort(403)
+    if decision == 'approved':
+        latest = latest_paid_plan(payment.user_id, payment.role)
+        base = max(now(), utc(latest.expires_at) if latest else now())
+        payment.expires_at = base + timedelta(days=30)
+    payment.status, payment.reviewed_at, payment.reviewer_id = decision, now(), session['user_id']
+    db.session.commit()
+    flash('Bank transfer decision saved.', 'success')
+    return redirect(url_for('bank_payment_queue'))
+
+@app.post('/subscriptions/pay/<role>')
+@login_required
+def start_plan_payment(role):
+    if role not in PLAN_PRICES: abort(404)
+    if not os.getenv('PAYSTACK_SECRET_KEY', '').startswith(('sk_test_', 'sk_live_')):
+        flash('Payment is not available yet.', 'error'); return redirect(url_for('subscriptions'))
+    user = db.session.get(User, session['user_id'])
+    payment = PlanPayment(reference='cm_' + secrets.token_hex(20), user_id=user.id,
+                          role=role, amount_ngn=plan_prices()[role], email=user.email)
+    db.session.add(payment); db.session.commit()
+    public_base = os.getenv('PUBLIC_BASE_URL', request.url_root.rstrip('/')).rstrip('/')
+    if os.getenv('RENDER') and not public_base.startswith('https://'):
+        flash('Configure PUBLIC_BASE_URL with your HTTPS site address.', 'error')
+        return redirect(url_for('subscriptions'))
+    try:
+        data = paystack_api('transaction/initialize', 'POST', {'email': payment.email,
+            'amount': payment.amount_ngn * 100, 'currency': 'NGN', 'reference': payment.reference,
+            'callback_url': public_base + url_for('payment_callback')})
+        checkout = data.get('authorization_url', '')
+        host = urlsplit(checkout)
+        if host.scheme != 'https' or not (host.hostname == 'paystack.com' or (host.hostname or '').endswith('.paystack.com')):
+            raise ValueError('Invalid checkout address.')
+        return redirect(checkout)
+    except (ValueError, URLError, HTTPError, KeyError, TimeoutError):
+        app.logger.exception('Paystack initialization failed')
+        flash('Payment could not start. Please try again.', 'error')
+        return redirect(url_for('subscriptions'))
+
+@app.get('/payments/callback')
+def payment_callback():
+    reference = request.args.get('reference', '')
+    payment = PlanPayment.query.filter_by(reference=reference).first() if reference else None
+    if not payment or session.get('user_id') != payment.user_id:
+        flash('Sign in to the account that started this payment to check its status.', 'info')
+        return redirect(url_for('login', next=url_for('subscriptions')))
+    try:
+        if confirm_payment(payment): flash('Payment confirmed. Your 30-day plan is active.', 'success')
+        else: flash('Payment is not confirmed yet. Please check again shortly.', 'info')
+    except (ValueError, URLError, HTTPError, KeyError, TimeoutError):
+        app.logger.exception('Paystack verification failed')
+        flash('Payment status could not be checked. Please try again shortly.', 'error')
+    return redirect(url_for('subscriptions'))
+
+@app.post('/payments/paystack/webhook')
+def payment_webhook():
+    key = os.getenv('PAYSTACK_SECRET_KEY', '')
+    raw = request.get_data()
+    signature = request.headers.get('x-paystack-signature', '')
+    if not key or len(raw) > 65536 or not hmac.compare_digest(
+        hmac.new(key.encode(), raw, hashlib.sha512).hexdigest(), signature): abort(403)
+    event = request.get_json(silent=True) or {}
+    if event.get('event') == 'charge.success':
+        reference = (event.get('data') or {}).get('reference', '')
+        payment = PlanPayment.query.filter_by(reference=reference).first() if isinstance(reference, str) else None
+        if payment:
+            try: confirm_payment(payment)
+            except (ValueError, URLError, HTTPError, KeyError, TimeoutError):
+                app.logger.exception('Paystack webhook verification failed')
+                return {'status': 'retry'}, 503
+    return {'status': 'ok'}
 
 @app.get('/health')
 def health():
