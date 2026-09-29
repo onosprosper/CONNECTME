@@ -117,6 +117,22 @@ class AdminAccount(db.Model):
     locked_until = db.Column(db.DateTime(timezone=True))
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
 
+class CallStaff(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), nullable=False)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    failed_logins = db.Column(db.Integer, nullable=False, default=0)
+    locked_until = db.Column(db.DateTime(timezone=True))
+
+class StaffCallAudit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    staff_id = db.Column(db.Integer, db.ForeignKey('call_staff.id'), nullable=False)
+    user_id = db.Column(db.Integer, nullable=False)
+    decision = db.Column(db.String(20), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
 class AdminAudit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     admin_id = db.Column(db.Integer, db.ForeignKey('admin_account.id'), nullable=False)
@@ -309,7 +325,7 @@ def confirm_payment(payment):
 
 @app.context_processor
 def shared():
-    return {'categories': CATEGORIES, 'service_choices': SERVICE_CHOICES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'csrf_token': csrf_token}
+    return {'categories': CATEGORIES, 'service_choices': SERVICE_CHOICES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'current_staff': db.session.get(CallStaff, session['staff_id']) if 'staff_id' in session else None, 'official_call_number': os.getenv('CONNECTME_CALLER_NUMBER', '07054801193').strip(), 'csrf_token': csrf_token}
 
 def csrf_token():
     if 'csrf' not in session:
@@ -590,12 +606,38 @@ def review_admin_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+def call_staff_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if session.get('admin_id'):
+            return review_admin_required(fn)(*args, **kwargs)
+        staff = db.session.get(CallStaff, session['staff_id']) if session.get('staff_id') else None
+        if not staff or not staff.is_active:
+            session.pop('staff_id', None)
+            return redirect(url_for('admin_login'))
+        return fn(*args, **kwargs)
+    return wrapper
+
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     if request.method == 'POST':
         email = request.form.get('email', '').strip().lower()[:255]
         password = request.form.get('password', '')
         account = AdminAccount.query.filter_by(email=email, is_active=True).first()
+        if not account:
+            staff = CallStaff.query.filter_by(email=email, is_active=True).first()
+            locked = staff and staff.locked_until and utc(staff.locked_until) > now()
+            if staff and not locked and check_password_hash(staff.password_hash, password):
+                staff.failed_logins = 0; staff.locked_until = None
+                db.session.commit(); session.clear(); session['staff_id'] = staff.id
+                return redirect(url_for('phone_call_queue'))
+            if staff and not locked:
+                staff.failed_logins += 1
+                if staff.failed_logins >= 5:
+                    staff.locked_until = now() + timedelta(minutes=15); staff.failed_logins = 0
+                db.session.commit()
+            flash('Invalid credentials or account temporarily locked. Try again later.', 'error')
+            return render_template('admin_login.html')
         locked = account and account.locked_until and utc(account.locked_until) > now()
         if account and not locked and check_password_hash(account.password_hash, password):
             account.failed_logins = 0; account.locked_until = None
@@ -612,7 +654,7 @@ def admin_login():
     return render_template('admin_login.html')
 
 @app.post('/admin/logout')
-@review_admin_required
+@call_staff_required
 def admin_logout():
     session.clear()
     return redirect(url_for('admin_login'))
@@ -632,6 +674,36 @@ def admin_password():
             flash('Password changed. Sign in again.', 'success')
             return redirect(url_for('admin_login'))
     return render_template('admin_password.html')
+
+@app.route('/admin/call-staff', methods=['GET', 'POST'])
+@review_admin_required
+def manage_call_staff():
+    if request.method == 'POST':
+        try:
+            email = field('email', 255).lower()
+            if '@' not in email or AdminAccount.query.filter_by(email=email).first():
+                raise ValueError('Use a valid staff email that is not an administrator account.')
+            action = request.form.get('action')
+            staff = CallStaff.query.filter_by(email=email).first()
+            if action == 'create':
+                if staff: raise ValueError('This staff email already exists.')
+                password = request.form.get('password', '')
+                if len(password) < 16 or len(password) > 256: raise ValueError('Use a password of at least 16 characters.')
+                db.session.add(CallStaff(name=field('name', 80), email=email, password_hash=generate_password_hash(password)))
+            elif action == 'disable' and staff:
+                staff.is_active = False
+            elif action == 'enable' and staff:
+                staff.is_active = True
+            elif action == 'reset' and staff:
+                password = request.form.get('password', '')
+                if len(password) < 16 or len(password) > 256: raise ValueError('Use a password of at least 16 characters.')
+                staff.password_hash = generate_password_hash(password)
+            else: raise ValueError('Choose a valid action and staff account.')
+            db.session.commit()
+            flash('Call staff account updated.', 'success')
+            return redirect(url_for('manage_call_staff'))
+        except ValueError as exc: flash(str(exc), 'error')
+    return render_template('call_staff.html', staff=CallStaff.query.order_by(CallStaff.id.desc()).all())
 
 @app.route('/admin/reviews/login', methods=['GET', 'POST'])
 def review_admin_login():
@@ -702,13 +774,13 @@ def report_decision(report_id):
     return redirect(url_for('report_queue'))
 
 @app.get('/admin/phone-calls')
-@review_admin_required
+@call_staff_required
 def phone_call_queue():
     challenges = PhoneCallChallenge.query.filter_by(status='pending').order_by(PhoneCallChallenge.created_at.asc()).all()
     return render_template('phone_call_queue.html', challenges=challenges)
 
 @app.post('/admin/phone-calls/<int:user_id>')
-@review_admin_required
+@call_staff_required
 def phone_call_decision(user_id):
     challenge = db.get_or_404(PhoneCallChallenge, user_id)
     if challenge.status != 'pending': abort(409)
@@ -716,8 +788,9 @@ def phone_call_decision(user_id):
         challenge.status = 'expired'; db.session.commit()
         flash('This code expired. Ask the user to request a new call.', 'error')
         return redirect(url_for('phone_call_queue'))
-    admin = db.session.get(AdminAccount, session['admin_id'])
-    if admin.email.casefold() == challenge.user.email.casefold(): abort(403)
+    admin = db.session.get(AdminAccount, session['admin_id']) if session.get('admin_id') else None
+    staff = db.session.get(CallStaff, session['staff_id']) if session.get('staff_id') else None
+    if (admin or staff).email.casefold() == challenge.user.email.casefold(): abort(403)
     decision = request.form.get('decision')
     if decision == 'reject':
         challenge.status = 'rejected'
@@ -742,7 +815,10 @@ def phone_call_decision(user_id):
         challenge.status = 'confirmed'
     else: abort(400)
     challenge.reviewed_at = now()
-    db.session.add(AdminAudit(admin_id=admin.id, action='phone_call_' + challenge.status, target_id=user_id))
+    if admin:
+        db.session.add(AdminAudit(admin_id=admin.id, action='phone_call_' + challenge.status, target_id=user_id))
+    else:
+        db.session.add(StaffCallAudit(staff_id=staff.id, user_id=user_id, decision=challenge.status))
     db.session.commit()
     flash('Phone call decision saved.', 'success')
     return redirect(url_for('phone_call_queue'))
