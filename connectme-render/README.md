@@ -80,3 +80,7 @@ In Render, set `BANK_NAME`, `BANK_ACCOUNT_NAME`, and `BANK_ACCOUNT_NUMBER` (a 10
 ## Separate staff account
 
 Set `ADMIN_SETUP_EMAIL` and `ADMIN_SETUP_PASSWORD` (at least 16 characters) in the **ConnectMe** Render environment and deploy once. On startup, the app creates the first staff account in the database only if no staff account exists; the password is hashed. Remove both setup variables from Render immediately after the first successful deployment. Sign in at `/admin/login`; staff reviews, safety reports, and bank payment approvals are available there. Change your password at `/admin/password`. Staff accounts do not use customer signup or the previous `ADMIN_REVIEW_KEY`; existing customer sessions and old review-key sessions cannot open staff queues. Five failed logins lock the staff account for 15 minutes. Staff decisions are recorded in `admin_audit`, while historical review data remains in place. The legacy `/admin/reviews/login` URL redirects to the new sign-in. The `admin_account` and `admin_audit` tables are created on startup. Keep `SECRET_KEY` and `DATABASE_URL` stable, and do not share passwords in chat or commit them to Git.
+
+## Larger portraits for both sides
+
+Provider cards now use a large photo, and public request cards give the person looking for help the same visual treatment. When posting a request, a customer can explicitly opt in to show their uploaded profile photo on that public request. Existing requests and new requests without opt-in show an initial instead. The new `request_photo_display` table is created at startup.

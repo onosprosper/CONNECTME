@@ -90,7 +90,12 @@ class JobRequest(db.Model):
     status = db.Column(db.String(20), nullable=False, default='open')
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     customer = db.relationship('User')
+    photo_display = db.relationship('RequestPhotoDisplay', uselist=False)
     offers = db.relationship('Offer', back_populates='job', order_by='Offer.created_at.desc()')
+
+class RequestPhotoDisplay(db.Model):
+    job_id = db.Column(db.Integer, db.ForeignKey('job_request.id'), primary_key=True)
+    show_photo = db.Column(db.Boolean, nullable=False, default=False)
 
 class Offer(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -336,7 +341,9 @@ def create_request():
             date_needed = datetime.strptime(field('date_needed', 10), '%Y-%m-%d').date()
             if date_needed < now().date(): raise ValueError('Choose a current or future date.')
             job = JobRequest(customer_id=session['user_id'], category=category, title=field('title', 140), city=field('city', 80), area=field('area', 120), date_needed=date_needed, budget=amount('budget'), details=field('details', 1200, False))
-            db.session.add(job); db.session.commit()
+            db.session.add(job); db.session.flush()
+            db.session.add(RequestPhotoDisplay(job_id=job.id, show_photo=request.form.get('show_photo') == 'yes'))
+            db.session.commit()
             flash('Your request is live.', 'success')
             return redirect(url_for('job_detail', job_id=job.id))
         except ValueError as exc: flash(str(exc), 'error')
