@@ -110,3 +110,7 @@ A signed-in user can open `/verification`, enter a Nigerian mobile number, and r
 ### Phone call staff
 
 Sign in as the owner at `/admin/login`, then open `/admin/call-staff` to add or disable call staff accounts. Each staff member signs in at `/admin/login` and can access only `/admin/phone-calls`. Staff call users from the official ConnectMe line `07054801193`, ask for the six-digit code displayed in the user's verification page, and enter it in the queue. Set `CONNECTME_CALLER_NUMBER` in Render to change the displayed number. The web app does not initiate calls or control the outgoing caller ID; the staff member must use a phone/SIM or calling service assigned this number. A verified phone means access to that phone number, not identity verification.
+
+### Search and social discovery
+
+The app exposes `/sitemap.xml` and `/robots.txt`. Public category and specialty pages are indexable; reviewed provider profiles are listed in the sitemap. Private pages and unreviewed provider profiles carry `noindex`. Open Graph tags use the ConnectMe hero image for social link previews. After deploying, verify the domain in Google Search Console and submit `/sitemap.xml`. Meta posts/ads are created in Meta Business Suite or Ads Manager, not by this app. Social reach or Google ranking is not guaranteed.

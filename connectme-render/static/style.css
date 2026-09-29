@@ -24,3 +24,5 @@
 
 /* Service explorer */
 .service-explorer{margin:2rem 0 3rem}.service-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.service-option{display:flex;flex-direction:column;gap:7px;padding:18px;border:1px solid #d7def3;border-radius:18px;background:#fff;text-decoration:none;color:#172453;min-height:150px;transition:transform .2s,box-shadow .2s}.service-option:hover{transform:translateY(-3px);box-shadow:0 10px 25px #1c347a18}.service-option.selected{border:2px solid #e866a3;background:#fff6fa}.service-visual{display:grid;place-items:center;width:62px;height:62px;border-radius:16px;background:linear-gradient(135deg,#e9f1ff,#ffe3f0);font-size:32px}.service-option strong{font-size:1rem}.service-option small{color:#596788}.service-hint{margin:18px 0;color:#596788}.service-hint a{color:#2253b5;font-weight:700}
+
+.share-strip{display:flex;align-items:center;flex-wrap:wrap;gap:18px;padding:16px 0;color:#253260}.share-strip a{color:#2854af;font-weight:700}

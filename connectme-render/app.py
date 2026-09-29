@@ -10,7 +10,7 @@ from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from urllib.parse import urlsplit, quote
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for, send_file
+from flask import Flask, abort, flash, redirect, render_template, request, session, url_for, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint, or_
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -386,7 +386,29 @@ def home():
     if service:
         query = query.filter(or_(Provider.service.ilike(f'%{service}%'), Provider.bio.ilike(f'%{service}%')))
     providers = query.order_by(Provider.id.desc()).limit(60).all()
-    return render_template('home.html', providers=providers, q=q, city=city, category=category, service=service)
+    title = f'{service or category} providers in Nigeria | ConnectMe' if category else 'ConnectMe | Find local services and people in Nigeria'
+    description = f'Find {service or category} providers in Nigeria. Compare local services and connect on ConnectMe.' if category else 'Find cooks, tutors, beauty professionals, skilled workers and local experiences across Nigeria on ConnectMe.'
+    canonical = url_for('home', category=category, service=service, _external=True) if category else url_for('home', _external=True)
+    return render_template('home.html', providers=providers, q=q, city=city, category=category, service=service, seo_title=title, seo_description=description, canonical=canonical, index_page=not q and not city)
+
+@app.get('/robots.txt')
+def robots():
+    content = 'User-agent: *\nAllow: /\nDisallow: /admin/\nDisallow: /dashboard\nDisallow: /verification\nDisallow: /profile\nDisallow: /payments/\nSitemap: ' + url_for('sitemap', _external=True) + '\n'
+    return Response(content, mimetype='text/plain')
+
+@app.get('/sitemap.xml')
+def sitemap():
+    from xml.etree.ElementTree import Element, SubElement, tostring
+    root = Element('urlset', xmlns='http://www.sitemaps.org/schemas/sitemap/0.9')
+    urls = [url_for('home', _external=True)]
+    for category_name, choices in SERVICE_CHOICES.items():
+        urls.append(url_for('home', category=category_name, _external=True))
+        urls.extend(url_for('home', category=category_name, service=name, _external=True) for _, name in choices)
+    for provider in Provider.query.join(ProviderReview, ProviderReview.provider_id == Provider.id).filter(ProviderReview.status == 'approved').order_by(Provider.id.desc()).limit(500).all():
+        urls.append(url_for('provider_detail', provider_id=provider.id, _external=True))
+    for location in urls:
+        SubElement(SubElement(root, 'url'), 'loc').text = location
+    return Response(tostring(root, encoding='utf-8', xml_declaration=True), mimetype='application/xml')
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
@@ -473,7 +495,11 @@ def provide():
 def provider_detail(provider_id):
     provider = db.get_or_404(Provider, provider_id)
     if provider.review and provider.review.status == 'suspended' and session.get('user_id') != provider.user_id and not session.get('admin_id'): abort(404)
-    return render_template('provider_detail.html', provider=provider)
+    return render_template('provider_detail.html', provider=provider,
+        seo_title=f'{provider.service} in {provider.city} | ConnectMe',
+        seo_description=f'Explore {provider.service} in {provider.area}, {provider.city}. See the provider profile and starting price on ConnectMe.',
+        canonical=url_for('provider_detail', provider_id=provider.id, _external=True),
+        index_page=bool(provider.review and provider.review.status == 'approved'))
 
 @app.get('/requests')
 def requests_list():
