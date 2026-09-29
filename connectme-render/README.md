@@ -114,3 +114,7 @@ Sign in as the owner at `/admin/login`, then open `/admin/call-staff` to add or 
 ### Search and social discovery
 
 The app exposes `/sitemap.xml` and `/robots.txt`. Public category and specialty pages are indexable; reviewed provider profiles are listed in the sitemap. Private pages and unreviewed provider profiles carry `noindex`. Open Graph tags use the ConnectMe hero image for social link previews. After deploying, verify the domain in Google Search Console and submit `/sitemap.xml`. Meta posts/ads are created in Meta Business Suite or Ads Manager, not by this app. Social reach or Google ranking is not guaranteed.
+
+### Google Search Console ownership
+
+Use a **URL-prefix property** for `https://connectme-mon2.onrender.com/`. In Search Console select **HTML tag**, copy only the `content` value from the provided `<meta name="google-site-verification" content="...">`, and set it as the Render environment variable `GOOGLE_SITE_VERIFICATION`. Render redeploys with the tag in the homepage `<head>`. Keep the variable in place after verification. The HTML file method requires a file at the website root, which this setup does not provide.

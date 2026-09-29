@@ -325,7 +325,7 @@ def confirm_payment(payment):
 
 @app.context_processor
 def shared():
-    return {'categories': CATEGORIES, 'service_choices': SERVICE_CHOICES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'current_staff': db.session.get(CallStaff, session['staff_id']) if 'staff_id' in session else None, 'official_call_number': os.getenv('CONNECTME_CALLER_NUMBER', '07054801193').strip(), 'csrf_token': csrf_token}
+    return {'categories': CATEGORIES, 'service_choices': SERVICE_CHOICES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'current_staff': db.session.get(CallStaff, session['staff_id']) if 'staff_id' in session else None, 'official_call_number': os.getenv('CONNECTME_CALLER_NUMBER', '07054801193').strip(), 'google_verification': os.getenv('GOOGLE_SITE_VERIFICATION', '').strip(), 'csrf_token': csrf_token}
 
 def csrf_token():
     if 'csrf' not in session:
