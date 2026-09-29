@@ -47,6 +47,22 @@ class User(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     photo = db.relationship('ProfilePhoto', uselist=False)
 
+class AdminAccount(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    failed_logins = db.Column(db.Integer, nullable=False, default=0)
+    locked_until = db.Column(db.DateTime(timezone=True))
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
+class AdminAudit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    admin_id = db.Column(db.Integer, db.ForeignKey('admin_account.id'), nullable=False)
+    action = db.Column(db.String(80), nullable=False)
+    target_id = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
 class Provider(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True, nullable=False)
@@ -216,7 +232,7 @@ def confirm_payment(payment):
 
 @app.context_processor
 def shared():
-    return {'categories': CATEGORIES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'csrf_token': csrf_token}
+    return {'categories': CATEGORIES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'csrf_token': csrf_token}
 
 def csrf_token():
     if 'csrf' not in session:
@@ -352,7 +368,7 @@ def provide():
 @app.get('/providers/<int:provider_id>')
 def provider_detail(provider_id):
     provider = db.get_or_404(Provider, provider_id)
-    if provider.review and provider.review.status == 'suspended' and session.get('user_id') != provider.user_id and not session.get('review_admin'): abort(404)
+    if provider.review and provider.review.status == 'suspended' and session.get('user_id') != provider.user_id and not session.get('admin_id'): abort(404)
     return render_template('provider_detail.html', provider=provider)
 
 @app.get('/requests')
@@ -443,25 +459,61 @@ def termii_request(action, data):
 def review_admin_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        key = os.getenv('ADMIN_REVIEW_KEY', '')
-        if not key or len(key) < 32 or not session.get('review_admin'):
-            abort(403)
+        account = db.session.get(AdminAccount, session['admin_id']) if session.get('admin_id') else None
+        if not account or not account.is_active:
+            session.pop('admin_id', None)
+            return redirect(url_for('admin_login'))
         return fn(*args, **kwargs)
     return wrapper
 
-@app.route('/admin/reviews/login', methods=['GET', 'POST'])
-@login_required
-def review_admin_login():
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
     if request.method == 'POST':
-        key = os.getenv('ADMIN_REVIEW_KEY', '')
-        if len(key) >= 32 and secrets.compare_digest(request.form.get('review_key', ''), key):
-            session['review_admin'] = True
+        email = request.form.get('email', '').strip().lower()[:255]
+        password = request.form.get('password', '')
+        account = AdminAccount.query.filter_by(email=email, is_active=True).first()
+        locked = account and account.locked_until and utc(account.locked_until) > now()
+        if account and not locked and check_password_hash(account.password_hash, password):
+            account.failed_logins = 0; account.locked_until = None
+            db.session.commit()
+            session.clear(); session['admin_id'] = account.id
             return redirect(url_for('review_queue'))
-        flash('Invalid review access key.', 'error')
-    return render_template('review_login.html')
+        if account and not locked:
+            account.failed_logins += 1
+            if account.failed_logins >= 5:
+                account.locked_until = now() + timedelta(minutes=15)
+                account.failed_logins = 0
+            db.session.commit()
+        flash('Invalid credentials or account temporarily locked. Try again later.', 'error')
+    return render_template('admin_login.html')
+
+@app.post('/admin/logout')
+@review_admin_required
+def admin_logout():
+    session.clear()
+    return redirect(url_for('admin_login'))
+
+@app.route('/admin/password', methods=['GET', 'POST'])
+@review_admin_required
+def admin_password():
+    if request.method == 'POST':
+        account = db.session.get(AdminAccount, session['admin_id'])
+        old = request.form.get('old_password', '')
+        new = request.form.get('new_password', '')
+        if not check_password_hash(account.password_hash, old) or len(new) < 16 or len(new) > 256:
+            flash('Check your current password and use at least 16 characters for the new one.', 'error')
+        else:
+            account.password_hash = generate_password_hash(new)
+            db.session.commit(); session.clear()
+            flash('Password changed. Sign in again.', 'success')
+            return redirect(url_for('admin_login'))
+    return render_template('admin_password.html')
+
+@app.route('/admin/reviews/login', methods=['GET', 'POST'])
+def review_admin_login():
+    return redirect(url_for('admin_login'))
 
 @app.get('/admin/reviews')
-@login_required
 @review_admin_required
 def review_queue():
     reviews = ProviderReview.query.filter_by(status='pending').order_by(ProviderReview.provider_id.desc()).all()
@@ -469,13 +521,13 @@ def review_queue():
     return render_template('review_queue.html', reviews=reviews, suspended=suspended)
 
 @app.post('/admin/reviews/<int:provider_id>')
-@login_required
 @review_admin_required
 def review_decision(provider_id):
     review = db.get_or_404(ProviderReview, provider_id)
     decision = request.form.get('decision')
     if decision not in ('approved', 'rejected') or (review.status == 'suspended' and decision != 'approved'): abort(400)
-    review.status = decision; review.reviewed_at = now(); review.reviewer_id = session['user_id']
+    review.status = decision; review.reviewed_at = now(); review.reviewer_id = None
+    db.session.add(AdminAudit(admin_id=session['admin_id'], action='provider_' + decision, target_id=provider_id))
     db.session.commit()
     flash('Provider review recorded.', 'success')
     return redirect(url_for('review_queue'))
@@ -503,14 +555,12 @@ def report_provider(provider_id):
     return render_template('report_form.html', provider=provider, reasons=REPORT_REASONS)
 
 @app.get('/admin/reports')
-@login_required
 @review_admin_required
 def report_queue():
     reports = SafetyReport.query.filter_by(status='open').order_by(SafetyReport.created_at.asc()).all()
     return render_template('report_queue.html', reports=reports)
 
 @app.post('/admin/reports/<int:report_id>')
-@login_required
 @review_admin_required
 def report_decision(report_id):
     report = db.get_or_404(SafetyReport, report_id)
@@ -519,9 +569,10 @@ def report_decision(report_id):
     if decision == 'suspended':
         review = db.session.get(ProviderReview, report.provider_id)
         if not review: review = ProviderReview(provider_id=report.provider_id)
-        review.status = 'suspended'; review.reviewed_at = now(); review.reviewer_id = session['user_id']
+        review.status = 'suspended'; review.reviewed_at = now(); review.reviewer_id = None
         db.session.add(review)
-    report.status = decision; report.reviewed_at = now(); report.reviewer_id = session['user_id']
+    report.status = decision; report.reviewed_at = now(); report.reviewer_id = None
+    db.session.add(AdminAudit(admin_id=session['admin_id'], action='report_' + decision, target_id=report_id))
     db.session.commit()
     flash('Report decision recorded.', 'success')
     return redirect(url_for('report_queue'))
@@ -666,25 +717,24 @@ def submit_bank_transfer(payment_id):
     return redirect(url_for('subscriptions'))
 
 @app.get('/admin/payments')
-@login_required
 @review_admin_required
 def bank_payment_queue():
     payments = BankTransferPayment.query.filter_by(status='submitted').order_by(BankTransferPayment.submitted_at.asc()).all()
     return render_template('bank_payment_queue.html', payments=payments)
 
 @app.post('/admin/payments/<int:payment_id>')
-@login_required
 @review_admin_required
 def bank_payment_decision(payment_id):
     payment = db.get_or_404(BankTransferPayment, payment_id)
     decision = request.form.get('decision')
     if payment.status != 'submitted' or decision not in ('approved', 'rejected'): abort(409)
-    if payment.user_id == session['user_id']: abort(403)
+    if payment.user.email.casefold() == db.session.get(AdminAccount, session['admin_id']).email.casefold(): abort(403)
     if decision == 'approved':
         latest = latest_paid_plan(payment.user_id, payment.role)
         base = max(now(), utc(latest.expires_at) if latest else now())
         payment.expires_at = base + timedelta(days=30)
-    payment.status, payment.reviewed_at, payment.reviewer_id = decision, now(), session['user_id']
+    payment.status, payment.reviewed_at, payment.reviewer_id = decision, now(), None
+    db.session.add(AdminAudit(admin_id=session['admin_id'], action='bank_' + decision, target_id=payment_id))
     db.session.commit()
     flash('Bank transfer decision saved.', 'success')
     return redirect(url_for('bank_payment_queue'))
@@ -756,6 +806,15 @@ def health():
 
 with app.app_context():
     db.create_all()
+    if not AdminAccount.query.first():
+        setup_email = os.getenv('ADMIN_SETUP_EMAIL', '').strip().lower()
+        setup_password = os.getenv('ADMIN_SETUP_PASSWORD', '')
+        if setup_email and setup_password:
+            if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', setup_email) or len(setup_password) < 16:
+                raise RuntimeError('ADMIN_SETUP_EMAIL must be valid and ADMIN_SETUP_PASSWORD must have at least 16 characters.')
+            db.session.add(AdminAccount(email=setup_email, password_hash=generate_password_hash(setup_password)))
+            db.session.commit()
+            app.logger.warning('Initial admin account created. Remove ADMIN_SETUP_PASSWORD and ADMIN_SETUP_EMAIL from Render.')
 
 if __name__ == '__main__':
     app.run(debug=True)
