@@ -57,6 +57,18 @@ NIGERIA_LOCATIONS = {
 }
 
 CATEGORIES = ('Food & cooking', 'Wellness', 'Home services', 'Skilled workers', 'Beauty', 'Care services', 'Tutors & skills', 'Transport & help', 'Experiences', 'Connect & community')
+SERVICE_CHOICES = {
+    'Food & cooking': [('🍲', 'Nigerian meals'), ('🎂', 'Baking & cakes'), ('🍽️', 'Event catering'), ('👩🏽‍🍳', 'Private chef'), ('🥘', 'Cooking lessons')],
+    'Wellness': [('💆', 'Massage'), ('🧘', 'Fitness & yoga'), ('🌿', 'Spa & wellness')],
+    'Home services': [('🧹', 'Cleaning'), ('🧺', 'Laundry'), ('🌱', 'Gardening'), ('🛠️', 'Home repairs')],
+    'Skilled workers': [('⚡', 'Electrician'), ('🚰', 'Plumber'), ('🚗', 'Mechanic'), ('🎨', 'Painter'), ('🔌', 'Generator repair')],
+    'Beauty': [('💄', 'Makeup'), ('💇', 'Hair styling'), ('🧶', 'Braids'), ('🪡', 'Wig installation'), ('💅', 'Nails'), ('✂️', 'Barber')],
+    'Care services': [('👶', 'Babysitting'), ('🧓', 'Elderly care'), ('🏠', 'Domestic help')],
+    'Tutors & skills': [('➗', 'Mathematics'), ('🔬', 'Science'), ('📖', 'English'), ('💻', 'Computer lessons'), ('🎹', 'Music'), ('🗣️', 'Languages')],
+    'Transport & help': [('🚘', 'Driver'), ('📦', 'Moving help'), ('🛍️', 'Errands')],
+    'Experiences': [('🗺️', 'City companion'), ('🥾', 'Hiking'), ('🎭', 'Events'), ('🍳', 'Cooking experience')],
+    'Connect & community': [('🤝', 'Networking'), ('📷', 'Photography'), ('🎲', 'Games'), ('🏙️', 'City companion')],
+}
 app = Flask(__name__)
 secret = os.getenv('SECRET_KEY')
 if not secret and os.getenv('RENDER'):
@@ -297,7 +309,7 @@ def confirm_payment(payment):
 
 @app.context_processor
 def shared():
-    return {'categories': CATEGORIES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'csrf_token': csrf_token}
+    return {'categories': CATEGORIES, 'service_choices': SERVICE_CHOICES, 'current_user': db.session.get(User, session['user_id']) if 'user_id' in session else None, 'current_admin': db.session.get(AdminAccount, session['admin_id']) if 'admin_id' in session else None, 'csrf_token': csrf_token}
 
 def csrf_token():
     if 'csrf' not in session:
@@ -343,15 +355,22 @@ def home():
     q = request.args.get('q', '').strip()[:100]
     city = request.args.get('city', '').strip()[:80]
     category = request.args.get('category', '').strip()[:80]
+    service = request.args.get('service', '').strip()[:120]
+    if category not in CATEGORIES:
+        category = ''
+    if service and (not category or service not in [name for _, name in SERVICE_CHOICES[category]]):
+        service = ''
     query = Provider.query.outerjoin(ProviderReview, ProviderReview.provider_id == Provider.id).filter(or_(ProviderReview.status.is_(None), ProviderReview.status != 'suspended'))
     if q:
         query = query.filter(or_(Provider.service.ilike(f'%{q}%'), Provider.bio.ilike(f'%{q}%'), Provider.area.ilike(f'%{q}%')))
     if city:
         query = query.filter(Provider.city.ilike(f'%{city}%'))
     if category:
-        query = query.filter_by(category=category)
+        query = query.filter(Provider.category == category)
+    if service:
+        query = query.filter(or_(Provider.service.ilike(f'%{service}%'), Provider.bio.ilike(f'%{service}%')))
     providers = query.order_by(Provider.id.desc()).limit(60).all()
-    return render_template('home.html', providers=providers, q=q, city=city, category=category)
+    return render_template('home.html', providers=providers, q=q, city=city, category=category, service=service)
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
