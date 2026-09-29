@@ -776,7 +776,14 @@ def report_decision(report_id):
 @app.get('/admin/phone-calls')
 @call_staff_required
 def phone_call_queue():
-    challenges = PhoneCallChallenge.query.filter_by(status='pending').order_by(PhoneCallChallenge.created_at.asc()).all()
+    pending = PhoneCallChallenge.query.filter_by(status='pending').order_by(PhoneCallChallenge.created_at.asc()).all()
+    challenges = []
+    for challenge in pending:
+        if min(utc(challenge.expires_at), utc(challenge.created_at) + timedelta(hours=2)) <= now():
+            challenge.status = 'expired'
+        else:
+            challenges.append(challenge)
+    db.session.commit()
     return render_template('phone_call_queue.html', challenges=challenges)
 
 @app.post('/admin/phone-calls/<int:user_id>')
@@ -784,7 +791,7 @@ def phone_call_queue():
 def phone_call_decision(user_id):
     challenge = db.get_or_404(PhoneCallChallenge, user_id)
     if challenge.status != 'pending': abort(409)
-    if utc(challenge.expires_at) < now():
+    if min(utc(challenge.expires_at), utc(challenge.created_at) + timedelta(hours=2)) <= now():
         challenge.status = 'expired'; db.session.commit()
         flash('This code expired. Ask the user to request a new call.', 'error')
         return redirect(url_for('phone_call_queue'))
@@ -871,7 +878,7 @@ def verification():
                     if not challenge: challenge = PhoneCallChallenge(user_id=session['user_id'])
                     challenge.phone, challenge.code_hash = phone, generate_password_hash(code)
                     challenge.status, challenge.attempts = 'pending', 0
-                    challenge.created_at, challenge.expires_at = now(), now() + timedelta(hours=24)
+                    challenge.created_at, challenge.expires_at = now(), now() + timedelta(hours=2)
                     challenge.reviewed_at = None
                     record = db.session.get(VerificationRecord, session['user_id'])
                     if not record: record = VerificationRecord(user_id=session['user_id'])
@@ -937,8 +944,11 @@ def verification():
         return redirect(url_for('verification'))
     photo = db.session.get(ProfilePhoto, session['user_id'])
     call_challenge = db.session.get(PhoneCallChallenge, session['user_id'])
-    if not call_challenge or call_challenge.status != 'pending' or utc(call_challenge.expires_at) < now():
+    if not call_challenge or call_challenge.status != 'pending' or min(utc(call_challenge.expires_at), utc(call_challenge.created_at) + timedelta(hours=2)) <= now():
         session.pop('phone_call_code', None)
+        if call_challenge and call_challenge.status == 'pending':
+            call_challenge.status = 'expired'
+            db.session.commit()
     return render_template('verification.html', record=record, has_photo=bool(photo), challenge=db.session.get(PhoneChallenge, session['user_id']), otp_ready=otp_configured(), call_challenge=call_challenge, call_code=session.get('phone_call_code'))
 
 @app.get('/photo/<int:user_id>')
