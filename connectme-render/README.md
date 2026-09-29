@@ -88,3 +88,7 @@ Provider cards now use a large photo, and public request cards give the person l
 ## Editable personal profile
 
 Signed-in users can open `/profile` to see and edit their name, date of birth, home address, state, and city. Date of birth and home address remain on the account holder's private profile page; public provider listings and requests continue to use their existing service area and city. Profile photos can be changed through `/verification`. A separate `user_profile` table is initialized on startup, preserving existing user records.
+
+## Ownership credit
+
+The site footer identifies ConnectMe as a product of Chipber Integrated Services Ltd.
