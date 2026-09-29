@@ -84,3 +84,7 @@ Set `ADMIN_SETUP_EMAIL` and `ADMIN_SETUP_PASSWORD` (at least 16 characters) in t
 ## Larger portraits for both sides
 
 Provider cards now use a large photo, and public request cards give the person looking for help the same visual treatment. When posting a request, a customer can explicitly opt in to show their uploaded profile photo on that public request. Existing requests and new requests without opt-in show an initial instead. The new `request_photo_display` table is created at startup.
+
+## Editable personal profile
+
+Signed-in users can open `/profile` to see and edit their name, date of birth, home address, state, and city. Date of birth and home address remain on the account holder's private profile page; public provider listings and requests continue to use their existing service area and city. Profile photos can be changed through `/verification`. A separate `user_profile` table is initialized on startup, preserving existing user records.

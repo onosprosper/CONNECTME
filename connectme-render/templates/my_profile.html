@@ -460,7 +460,7 @@ def my_profile():
             return redirect(url_for('my_profile'))
         except ValueError as exc:
             flash('Check your profile details. ' + str(exc), 'error')
-    return render_template('my_profile.html', user=user, profile=profile)
+    return render_template('my_profile.html', user=user, profile=profile, today=now().date().isoformat())
 
 @app.get('/dashboard')
 @login_required
