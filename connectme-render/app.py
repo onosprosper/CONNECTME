@@ -410,10 +410,12 @@ def provide():
             provider.category, provider.service = category, field('service', 120)
             provider.city, provider.area = field('city', 80), field('area', 120)
             provider.bio, provider.price = field('bio', 800, False), amount('price')
+            phone_record = db.session.get(VerificationRecord, session['user_id'])
+            provider.phone_verified = bool(phone_record and phone_record.phone_verified)
             db.session.add(provider); db.session.flush()
             review = db.session.get(ProviderReview, provider.id)
             if not review: db.session.add(ProviderReview(provider_id=provider.id))
-            elif review.status == 'approved':
+            elif review.status in ('approved', 'rejected'):
                 review.status = 'pending'; review.reviewed_at = None; review.reviewer_id = None
             db.session.commit()
             flash('Your profile is saved. It is awaiting review.', 'success')
@@ -707,6 +709,8 @@ def verification():
                 flash('Enter a valid Nigerian mobile number.', 'error')
             elif not otp_configured():
                 flash('SMS verification is not configured yet. No code was sent.', 'error')
+            elif VerificationRecord.query.filter(VerificationRecord.phone == phone, VerificationRecord.phone_verified.is_(True), VerificationRecord.user_id != session['user_id']).first():
+                flash('This phone number is already verified on another account.', 'error')
             else:
                 challenge = db.session.get(PhoneChallenge, session['user_id'])
                 if challenge and (now() - utc(challenge.last_sent_at)).total_seconds() < 90:
@@ -730,7 +734,7 @@ def verification():
         elif action == 'verify_phone':
             challenge = db.session.get(PhoneChallenge, session['user_id'])
             code = request.form.get('code', '').strip()
-            if not challenge or utc(challenge.expires_at) < now() or challenge.attempts >= 3:
+            if not otp_configured() or not challenge or utc(challenge.expires_at) < now() or challenge.attempts >= 3:
                 flash('The code has expired. Request a new one.', 'error')
             elif not re.fullmatch(r'[0-9]{6}', code):
                 flash('Enter the six-digit code.', 'error')

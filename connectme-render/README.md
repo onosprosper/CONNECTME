@@ -96,3 +96,9 @@ The site footer identifies ConnectMe as a product of Chipber Integrated Services
 ## State and city selection
 
 The private profile form provides dropdowns for Nigeria's 36 states and the FCT. Selecting a state loads a short list of common cities and towns; people elsewhere choose `Other city or town` and type their location. The server checks that preset cities belong to the selected state. These are convenient suggestions, not a complete gazetteer. Existing custom towns remain editable.
+
+## Correct listing details and verify phones
+
+The owner of a provider listing can choose `Edit service details` from its public profile or `Edit listing` from the dashboard. The form is prefilled, so spelling, price, city, area, category and description can be corrected. Approved or rejected listings go back to the staff review queue after edits; suspended listings remain suspended until staff restore them.
+
+Phone verification is available when `TERMII_API_KEY`, an approved `TERMII_SENDER_ID`, and a valid HTTPS `TERMII_BASE_URL` are set in the ConnectMe Render service. The `/verification` page then shows a phone number form and a six-digit SMS code form. Codes expire after five minutes; the server limits retries and resets the badge when a new number is submitted. Without these settings the page says verification is unavailable and no badge is granted. These integrations require a real end-to-end SMS test with an account you control before production use. Phone verification proves control of a number, not identity or background safety. Never put the Termii API key in a Git commit or browser code.
