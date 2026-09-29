@@ -16,6 +16,46 @@ from sqlalchemy import UniqueConstraint, or_
 from werkzeug.security import check_password_hash, generate_password_hash
 from PIL import Image, UnidentifiedImageError
 
+NIGERIA_LOCATIONS = {
+    'Abia': ('Umuahia', 'Aba', 'Ohafia'),
+    'Adamawa': ('Yola', 'Mubi', 'Numan'),
+    'Akwa Ibom': ('Uyo', 'Eket', 'Ikot Ekpene'),
+    'Anambra': ('Awka', 'Onitsha', 'Nnewi'),
+    'Bauchi': ('Bauchi', 'Azare'),
+    'Bayelsa': ('Yenagoa', 'Sagbama'),
+    'Benue': ('Makurdi', 'Gboko', 'Otukpo'),
+    'Borno': ('Maiduguri', 'Biu'),
+    'Cross River': ('Calabar', 'Ikom', 'Ogoja'),
+    'Delta': ('Asaba', 'Warri', 'Sapele', 'Ughelli'),
+    'Ebonyi': ('Abakaliki', 'Afikpo'),
+    'Edo': ('Benin City', 'Auchi', 'Ekpoma'),
+    'Ekiti': ('Ado Ekiti', 'Ikere Ekiti'),
+    'Enugu': ('Enugu', 'Nsukka', 'Agbani'),
+    'FCT': ('Abuja', 'Gwagwalada', 'Kuje', 'Kubwa'),
+    'Gombe': ('Gombe', 'Kaltungo'),
+    'Imo': ('Owerri', 'Orlu', 'Okigwe'),
+    'Jigawa': ('Dutse', 'Hadejia'),
+    'Kaduna': ('Kaduna', 'Zaria', 'Kafanchan'),
+    'Kano': ('Kano', 'Wudil'),
+    'Katsina': ('Katsina', 'Funtua', 'Daura'),
+    'Kebbi': ('Birnin Kebbi', 'Argungu', 'Yauri'),
+    'Kogi': ('Lokoja', 'Okene', 'Idah'),
+    'Kwara': ('Ilorin', 'Offa'),
+    'Lagos': ('Lagos', 'Ikeja', 'Lekki', 'Ikorodu', 'Epe', 'Badagry'),
+    'Nasarawa': ('Lafia', 'Keffi', 'Karu'),
+    'Niger': ('Minna', 'Suleja', 'Bida', 'Kontagora'),
+    'Ogun': ('Abeokuta', 'Ijebu Ode', 'Sagamu', 'Ota'),
+    'Ondo': ('Akure', 'Ondo', 'Owo'),
+    'Osun': ('Osogbo', 'Ile-Ife', 'Ilesa'),
+    'Oyo': ('Ibadan', 'Ogbomoso', 'Oyo'),
+    'Plateau': ('Jos', 'Bukuru', 'Pankshin'),
+    'Rivers': ('Port Harcourt', 'Bonny', 'Ahoada', 'Omoku'),
+    'Sokoto': ('Sokoto', 'Tambuwal'),
+    'Taraba': ('Jalingo', 'Wukari'),
+    'Yobe': ('Damaturu', 'Potiskum', 'Nguru'),
+    'Zamfara': ('Gusau', 'Kaura Namoda'),
+}
+
 CATEGORIES = ('Food & cooking', 'Wellness', 'Home services', 'Skilled workers', 'Beauty', 'Care services', 'Tutors & skills', 'Transport & help', 'Experiences', 'Connect & community')
 app = Flask(__name__)
 secret = os.getenv('SECRET_KEY')
@@ -444,7 +484,15 @@ def my_profile():
             name = field('name', 80)
             address = field('home_address', 255, False)
             state = field('state', 80, False)
-            city = field('city', 80, False)
+            selected_city = field('city', 80, False)
+            city = field('other_city', 80) if selected_city == '__other__' else selected_city
+            if state:
+                if state not in NIGERIA_LOCATIONS or not city:
+                    raise ValueError('Select a state and city or town.')
+                if selected_city != '__other__' and city not in NIGERIA_LOCATIONS[state]:
+                    raise ValueError('Choose a city for the selected state.')
+            elif city:
+                raise ValueError('Select a state for your city.')
             if any(ord(ch) < 32 for ch in name + address + state + city):
                 raise ValueError('Remove control characters from your profile.')
             raw_dob = request.form.get('date_of_birth', '').strip()
@@ -460,7 +508,7 @@ def my_profile():
             return redirect(url_for('my_profile'))
         except ValueError as exc:
             flash('Check your profile details. ' + str(exc), 'error')
-    return render_template('my_profile.html', user=user, profile=profile)
+    return render_template('my_profile.html', user=user, profile=profile, today=now().date().isoformat(), locations=NIGERIA_LOCATIONS)
 
 @app.get('/dashboard')
 @login_required

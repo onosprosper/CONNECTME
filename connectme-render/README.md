@@ -92,3 +92,7 @@ Signed-in users can open `/profile` to see and edit their name, date of birth, h
 ## Ownership credit
 
 The site footer identifies ConnectMe as a product of Chipber Integrated Services Ltd.
+
+## State and city selection
+
+The private profile form provides dropdowns for Nigeria's 36 states and the FCT. Selecting a state loads a short list of common cities and towns; people elsewhere choose `Other city or town` and type their location. The server checks that preset cities belong to the selected state. These are convenient suggestions, not a complete gazetteer. Existing custom towns remain editable.

@@ -23,13 +23,56 @@
     <small>EDIT YOUR DETAILS</small><h2>Your information</h2>
     <label>Full name<input name="name" maxlength="80" required autocomplete="name" value="{{ request.form.get('name',user.name) }}"></label>
     <label>Date of birth<input name="date_of_birth" type="date" min="1900-01-01" max="{{ today }}" autocomplete="bday" value="{{ request.form.get('date_of_birth',profile.date_of_birth.isoformat() if profile and profile.date_of_birth else '') }}"></label>
+    {% set saved_state = request.form.get('state',profile.state if profile else '') %}
+    {% set saved_city = request.form.get('city',profile.city if profile else '') %}
     <div class="pair">
-      <label>State<input name="state" maxlength="80" autocomplete="address-level1" placeholder="Rivers" value="{{ request.form.get('state',profile.state if profile else '') }}"></label>
-      <label>City<input name="city" maxlength="80" autocomplete="address-level2" placeholder="Port Harcourt" value="{{ request.form.get('city',profile.city if profile else '') }}"></label>
+      <label>State
+        <select name="state" id="profile-state">
+          <option value="">Select a state or FCT</option>
+          {% for state in locations %}<option value="{{ state }}" {% if state == saved_state %}selected{% endif %}>{{ state }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>City or town
+        <select name="city" id="profile-city" data-selected="{{ saved_city }}">
+          <option value="">{{ 'Select a city or town' if saved_state else 'Select a state first' }}</option>
+          {% for city_name in locations.get(saved_state, ()) %}<option value="{{ city_name }}" {% if city_name == saved_city %}selected{% endif %}>{{ city_name }}</option>{% endfor %}
+          {% if saved_state %}<option value="__other__" {% if saved_city == '__other__' or saved_city and saved_city not in locations.get(saved_state, ()) %}selected{% endif %}>Other city or town</option>{% endif %}
+        </select>
+      </label>
     </div>
+    <label id="other-city-row" hidden>Other city or town
+      <input name="other_city" id="profile-other-city" maxlength="80" value="{{ request.form.get('other_city',profile.city if profile and profile.city and profile.state in locations and profile.city not in locations[profile.state] else '') }}" placeholder="Enter your city or town" disabled>
+    </label>
     <label>Home address<textarea name="home_address" maxlength="255" rows="3" autocomplete="street-address" placeholder="Street address, area and house number">{{ request.form.get('home_address',profile.home_address if profile else '') }}</textarea></label>
     <p class="profile-privacy">Your home address and birth date are not shown on provider listings or public requests. Use your service area, not your home address, in public posts.</p>
     <button class="btn">Save profile</button>
   </form>
 </div>
+<script>
+(() => {
+  const locations = {{ locations|tojson }};
+  const state = document.getElementById('profile-state');
+  const city = document.getElementById('profile-city');
+  const otherRow = document.getElementById('other-city-row');
+  const otherInput = document.getElementById('profile-other-city');
+  const saved = city.dataset.selected;
+  const updateOther = () => {
+    const other = city.value === '__other__';
+    otherRow.hidden = !other;
+    otherInput.disabled = !other;
+    otherInput.required = other;
+  };
+  const updateCities = (selected = '') => {
+    city.replaceChildren(new Option(state.value ? 'Select a city or town' : 'Select a state first', ''));
+    for (const name of locations[state.value] || []) city.add(new Option(name, name));
+    if (state.value) city.add(new Option('Other city or town', '__other__'));
+    city.value = selected && (locations[state.value] || []).includes(selected) ? selected :
+      (selected && state.value ? '__other__' : '');
+    updateOther();
+  };
+  state.addEventListener('change', () => { otherInput.value = ''; updateCities(); });
+  city.addEventListener('change', updateOther);
+  updateCities(saved === '__other__' ? '__other__' : saved);
+})();
+</script>
 {% endblock %}
